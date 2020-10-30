@@ -226,3 +226,60 @@ function construct_service!(
     end
     return
 end
+
+function construct_service!(
+    psi_container::PSIContainer,
+    services::Vector{SR},
+    sys::PSY.System,
+    model::ServiceModel{SR, RangeReserve},
+    devices_template::Dict{Symbol, DeviceModel},
+    incompatible_device_types::Vector{<:DataType},
+) where {SR <: PSY.ReserveNonSpinning}
+    services_mapping = PSY.get_contributing_device_mapping(sys)
+    time_steps = model_time_steps(psi_container)
+    names = [PSY.get_name(s) for s in services]
+    device_names = PSY.get_name.(get_nonspinning_contributing_devices(services_mapping))
+
+    if model_has_parameters(psi_container)
+        container = add_param_container!(
+            psi_container,
+            UpdateRef{SR}("service_requirement", "requirement"),
+            names,
+            time_steps,
+        )
+    end
+
+    add_cons_container!(
+        psi_container,
+        make_constraint_name(REQUIREMENT, SR),
+        names,
+        time_steps,
+    )
+
+    add_cons_container!(
+        psi_container,
+        make_constraint_name(NON_SPINNING_LIMIT, SR),
+        device_names,
+        time_steps,
+    )
+
+    for service in services
+        contributing_devices =
+            services_mapping[(type = SR, name = PSY.get_name(service))].contributing_devices
+        if !isempty(incompatible_device_types)
+            contributing_devices =
+                [d for d in contributing_devices if typeof(d) ∉ incompatible_device_types]
+        end
+        #Services without contributing devices should have been filtered out in the validation
+        @assert !isempty(contributing_devices)
+        #Variables
+        add_variables!(psi_container, ActiveServiceVariable, service, contributing_devices)
+        # Constraints
+        service_requirement_constraint!(psi_container, service, model)
+        range_limit!(psi_container, contributing_devices)
+
+        # Cost Function
+        cost_function!(psi_container, service, model)
+    end
+    return
+end
